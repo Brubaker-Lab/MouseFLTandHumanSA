@@ -1,0 +1,149 @@
+---
+title: "Drug_correlation_Park"
+author: "Jee Hyun Park"
+output: Drug_screening_notebook
+---
+
+```{r}
+filtered_cp_mean_coeff 
+#correlation between all drugs and mouse loadings 
+lincs_f <- filtered_cp_mean_coeff
+
+#reformat the matrix 
+row.names(lincs_f) <- filtered_cp_mean_coeff$X
+lincs_f <- lincs_f[,-1]
+lincs_f <- as.matrix(lincs_f)
+
+#filter out duplicated drugs 
+unique_lincs <- lincs_f[!duplicated(lincs_f),]
+lincs_t <- t(unique_lincs)
+
+#find differentially expressed drugs 
+deg_drug <- list()
+for (x in 1:ncol(lincs_t)) {
+  #normalize data, z-score 
+  norm_drug <- scale(as.numeric(as.matrix(lincs_t[,x])), center = TRUE, scale = TRUE)
+  row.names(norm_drug) <- row.names(lincs_t) 
+  
+  #get genes for each drug p-value less than 0.05 
+  drug_pval <- 2*pnorm(q = abs(norm_drug), lower.tail= FALSE)
+  sig_drug <- drug_pval[(drug_pval <= 0.05),]
+  df_sig_drug <- as.data.frame(sig_drug)
+  
+  #get the original coefficient values from filtered drug list 
+  drug_names <- row.names(df_sig_drug)
+  filt_drug <- lincs_t[c(drug_names),x]
+  #add each drug to list 
+  deg_drug[[x]] <- filt_drug
+  
+}
+
+#import mouse loading matrix
+Q_mouse 
+
+# get correlation for each drug with each mouse loading 
+alldrug_cor <- list() 
+# get the overlap genes between drug and PC loadings 
+int_dm <- list() 
+for (x in 1:length(deg_drug)) { 
+  fdrug_loading <- intersect(names(deg_drug[[x]]), row.names(Q_mouse))
+  int_dm[[x]] <- fdrug_loading
+  # get only drug genes CDs 
+  fdrug <- as.data.frame(deg_drug[[x]][c(fdrug_loading)])
+  row.names(fdrug) <- fdrug_loading
+  # get only filtered loadings based on the selected genes 
+  f_loadmouse <- Q_mouse[c(fdrug_loading),]
+  
+  # spearman correlation between drug genes and loading genes 
+  drug_load_cor <- apply(f_loadmouse, 2, function(x) cor.test(x, as.numeric(fdrug$`deg_drug[[x]][c(fdrug_loading)]`), method = c("spearman")))
+  alldrug_cor[[x]] <- drug_load_cor
+
+}
+```
+
+```{r}
+# get the drugs correlations for only PC of interest (PC3,4,6)
+pc_pvalue <- numeric(0) 
+pc_rho <- numeric(0) 
+for (i in 1:length(alldrug_cor)) { 
+  pc_idx <- 6
+  pc_pvalue[i] <- alldrug_cor[[i]][[pc_idx]]$p.value
+  pc_rho[i] <- alldrug_cor[[i]][[pc_idx]]$estimate
+}
+
+# combine p-value and rho values 
+pc_pval_rho <- cbind(pc_pvalue, pc_rho)
+row.names(pc_pval_rho) <- colnames(lincs_t)
+
+# FDR correction adjust p-value BH 
+fdr_pcpval <- p.adjust(pc_pval_rho[,1], method = c("BH"))
+pc_qval_rho <- pc_pval_rho
+pc_qval_rho[,1] <-fdr_pcpval
+colnames(pc_qval_rho)[1] <- c("pc_qvalue")
+sig_pcqval_rho <- pc_qval_rho[(pc_qval_rho[,1]<= 0.05),]
+
+rankpc_rho <- rank(sig_pcqval_rho[,2])
+rank_rho_pc <- cbind(rankpc_rho, sig_pcqval_rho)
+rank_rho_pc <- as.data.frame(rank_rho_pc)
+
+# order the values increasing 
+or_rank_rho_pc <- rank_rho_pc[order(rank_rho_pc$rankpc_rho),]
+write.csv(or_rank_rho_pc, "pc6_drug_qrho_fdr.csv")
+
+library(ggplot2)
+svg("pc6_qval_drug.svg", width=4, height=4)
+theme_set(theme_bw())
+ggplot(or_rank_rho_pc, aes(x=as.numeric(or_rank_rho_pc[,1]), y=as.numeric(or_rank_rho_pc[,3]))) + 
+  geom_point(pch=16, size=2) + labs(x="Rank", y="Spearman's rho") + 
+  theme(panel.grid = element_blank()) +
+  scale_x_continuous(n.breaks=10) +
+  scale_y_continuous(n.breaks=9) +
+  theme(aspect.ratio=1)
+dev.off()
+
+
+```
+
+```{r}
+# get fda approved file
+FDA_approved_list_March2025 
+colnames(FDA_approved_list_March2025) <- c("fda_drugs")
+fda_drugs <- FDA_approved_list_March2025
+
+# change drug names to uppercase 
+mouse_rho <- row.names(or_rank_rho_pc)
+mouse_upper <- toupper(mouse_rho)
+mouse_upper_f <- gsub("-", " ",mouse_upper)
+
+#rownames(or_rank_rho_pc)[rownames(or_rank_rho_pc)== "butorphanol-(+)-tartrate"]="butorphanol-tartrate"
+
+# function find the drugs that are fda approved 
+mouse_fda_overlap <- function(mouse_rho,mouse_upper) {
+  mouse_fda <- c()
+  library(stringr)
+  for (x in 1:length(mouse_rho)) {
+    if (sum(str_detect(fda_drugs$fda_drugs,mouse_upper_f[x])) > 0 & mouse_rho[x] != mouse_upper[x]) {
+      mouse_fda <- append(mouse_fda,mouse_rho[x])
+    }
+  }
+  return(mouse_fda)
+}
+
+mouse_rho_fda <- mouse_fda_overlap(mouse_rho,mouse_upper)
+mouse_rho_fda_f <- or_rank_rho_pc[c(mouse_rho_fda),]
+write.csv(mouse_rho_fda_f,"pc6_rho_fda_list.csv")
+
+# plot correlation
+library(ggplot2)
+svg("mouse_pc6_qval_fda.svg", width=4, height=4)
+theme_set(theme_bw())
+ggplot(mouse_rho_fda_f, aes(x=as.numeric(mouse_rho_fda_f[,1]), y=as.numeric(mouse_rho_fda_f[,3]))) + 
+  geom_point(pch=16, size=2) + labs(x="Rank", y="Spearman's rho") + 
+  theme(panel.grid = element_blank()) +
+  scale_x_continuous(n.breaks=10) +
+  scale_y_continuous(n.breaks=9) +
+  theme(aspect.ratio=1)
+dev.off()
+
+```
+
